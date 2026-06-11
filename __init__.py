@@ -328,6 +328,82 @@ class RK_SpacyFilter:
 
 
 
+class RK_WordNetEntityFilter:
+    CATEGORY = "roka/text"
+
+    DEFAULT_REJECTION_LIST = ""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "terms": ("STRING", {"multiline": True, "default": ""}),
+                "entity_filter_rejection_list": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": cls.DEFAULT_REJECTION_LIST,
+                        "tooltip": "Comma/newline-separated WordNet synset labels to reject. If a term has any noun sense whose hypernym path contains one of these labels, the term is removed. Example: physical entity removes every term under physical_entity.n.01.",
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("filtered_terms",)
+    FUNCTION = "filter"
+
+    def _split_terms(self, value):
+        import re
+        return [p.strip() for p in re.split(r"[,\n]+", value or "") if p.strip()]
+
+    def _normalise_wordnet_label(self, value):
+        import re
+        return re.sub(r"\s+", "_", str(value).strip().lower())
+
+    def _synset_labels(self, synset):
+        labels = {synset.name().split(".")[0].lower()}
+        for lemma in synset.lemmas():
+            labels.add(lemma.name().lower())
+        return labels
+
+    def _term_hits_rejection_hypernym(self, term, rejected):
+        if not rejected:
+            return False
+
+        normalised_term = self._normalise_wordnet_label(term)
+        if normalised_term in rejected:
+            return True
+
+        try:
+            from nltk.corpus import wordnet as wn
+            synsets = wn.synsets(normalised_term, pos=wn.NOUN)
+        except Exception:
+            return False
+
+        for synset in synsets:
+            for path in synset.hypernym_paths():
+                path_labels = set()
+                for hypernym in path:
+                    path_labels.update(self._synset_labels(hypernym))
+                if path_labels & rejected:
+                    return True
+        return False
+
+    def filter(self, terms, entity_filter_rejection_list=DEFAULT_REJECTION_LIST):
+        rejected = {self._normalise_wordnet_label(term) for term in self._split_terms(entity_filter_rejection_list)}
+        out, seen = [], set()
+        for raw_term in self._split_terms(terms):
+            term_key = self._normalise_wordnet_label(raw_term)
+            if term_key in seen:
+                continue
+            if self._term_hits_rejection_hypernym(raw_term, rejected):
+                continue
+            seen.add(term_key)
+            out.append(raw_term.strip().lower())
+        return (", ".join(out),)
+
+
 class RK_SAM3TextSegmentation:
     CATEGORY = "roka/sam3"
 
@@ -530,6 +606,7 @@ class RK_SceneGraphReducer:
             "optional": {
                 "foreground_mask": ("MASK",),
                 "depth": ("INT", {"default": -1, "min": -1, "max": 100}),
+                "merge_mode": (["overlapping_siblings", "same_siblings"], {"default": "overlapping_siblings"}),
             },
         }
 
@@ -537,7 +614,7 @@ class RK_SceneGraphReducer:
     RETURN_NAMES = ("reduced_scenegraph",)
     FUNCTION = "reduce"
 
-    def reduce(self, scenegraph, bboxes, masks, foreground_mask=None, depth=-1):
+    def reduce(self, scenegraph, bboxes, masks, foreground_mask=None, depth=-1, merge_mode="overlapping_siblings"):
         import json as jsonlib
         import torch
 
@@ -646,7 +723,7 @@ class RK_SceneGraphReducer:
                     labels.append(label)
             return ", ".join(labels) if labels else "item"
 
-        def grouped_siblings(ids):
+        def grouped_same_label_siblings(ids):
             by_label = {}
             for nid in ids:
                 label = clean_label(node_by_id.get(nid, {}).get("label"))
@@ -658,13 +735,54 @@ class RK_SceneGraphReducer:
                     continue
                 label = clean_label(node_by_id.get(nid, {}).get("label"))
                 group = by_label.get(label.lower(), [nid])
-                if len(group) == 2:
-                    out.append(group[:])
-                    consumed.update(group)
-                else:
-                    out.append([nid])
-                    consumed.add(nid)
+                out.append(group[:])
+                consumed.update(group)
             return out
+
+        def grouped_overlapping_siblings(ids):
+            valid_ids = [nid for nid in ids if isinstance(nid, int) and masks is not None and 0 <= nid < n_masks]
+            if len(valid_ids) < 2:
+                return [[nid] for nid in ids]
+
+            masks_by_id = {nid: mask_2d(masks[nid]) for nid in valid_ids}
+            parent = {nid: nid for nid in ids}
+
+            def find(nid):
+                while parent[nid] != nid:
+                    parent[nid] = parent[parent[nid]]
+                    nid = parent[nid]
+                return nid
+
+            def union(a, b):
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[rb] = ra
+
+            for index, a in enumerate(valid_ids):
+                ma = masks_by_id[a]
+                for b in valid_ids[index + 1:]:
+                    mb = masks_by_id[b]
+                    if torch.logical_and(ma, mb).any().item():
+                        union(a, b)
+
+            groups = {}
+            for nid in ids:
+                groups.setdefault(find(nid), []).append(nid)
+
+            out = []
+            consumed = set()
+            for nid in ids:
+                if nid in consumed:
+                    continue
+                group = groups.get(find(nid), [nid])
+                out.append(group[:])
+                consumed.update(group)
+            return out
+
+        def grouped_siblings(ids):
+            if merge_mode == "same_siblings":
+                return grouped_same_label_siblings(ids)
+            return grouped_overlapping_siblings(ids)
 
         out = []
         next_id = 0
@@ -697,13 +815,8 @@ class RK_SceneGraphReducer:
             new_id = add_node(clean_label(node.get("label") or node.get("caption") or node.get("desc")), parent_id, foreground_value, bbox_for(nid), [nid], level)
             child_ids = [child for child in children.get(nid, []) if child in bucket_set]
             for group in grouped_siblings(child_ids):
-                if len(group) == 2:
-                    if target_depth < 0 or level + 1 >= target_depth:
-                        emit_merge(group, new_id, foreground_value, bucket_set, level + 1)
-                    else:
-                        # Before the reduction boundary, keep both nodes so tree structure remains explicit.
-                        for child in group:
-                            emit_preserved(child, new_id, foreground_value, bucket_set, level + 1)
+                if len(group) > 1:
+                    emit_merge(group, new_id, foreground_value, bucket_set, level + 1)
                 else:
                     emit_preserved(group[0], new_id, foreground_value, bucket_set, level + 1)
             return new_id
@@ -723,11 +836,10 @@ class RK_SceneGraphReducer:
                     roots.append(nid)
             roots.sort()
             for group in grouped_siblings(roots):
-                if len(group) == 2 and target_depth == 0:
+                if len(group) > 1:
                     emit_merge(group, group_id, foreground_value, bucket_set, 0)
                 else:
-                    for root in group:
-                        emit_preserved(root, group_id, foreground_value, bucket_set, 0)
+                    emit_preserved(group[0], group_id, foreground_value, bucket_set, 0)
 
         return (jsonlib.dumps(out, indent=2),)
 
@@ -1014,6 +1126,121 @@ class RK_SceneGraphComposer:
         return (build_composition("simple"), build_composition("horizontal"), build_composition("vertical"))
 
 
+class RK_ForegroundAlign:
+    CATEGORY = "roka/sam3"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "scenegraph": ("STRING", {"multiline": True}),
+                "align": (["left", "center", "right"], {"default": "center"}),
+            },
+            "optional": {
+                "canvas_width": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1}),
+                "padding": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("scenegraph", "summary")
+    FUNCTION = "align_foreground"
+
+    def align_foreground(self, scenegraph, align="center", canvas_width=0, padding=0):
+        import copy
+
+        nodes = _rk_json_load(scenegraph, [])
+        if not isinstance(nodes, list):
+            return (_rk_json_dump(nodes), "Input is not a scenegraph list")
+
+        out = [copy.deepcopy(node) for node in nodes if isinstance(node, dict)]
+        node_by_id = {node.get("id"): node for node in out}
+        children = {}
+        for node in out:
+            node_id = node.get("id")
+            parent_id = node.get("parent_id")
+            if parent_id in node_by_id and parent_id != node_id:
+                children.setdefault(parent_id, []).append(node_id)
+
+        def valid_bbox(box):
+            return isinstance(box, list) and len(box) == 4
+
+        def area(node):
+            box = node.get("bbox")
+            if not valid_bbox(box):
+                return -1.0
+            return max(0.0, float(box[2]) - float(box[0])) * max(0.0, float(box[3]) - float(box[1]))
+
+        def descendants(root_id):
+            found, stack, seen = [], [root_id], set()
+            while stack:
+                nid = stack.pop()
+                if nid in seen:
+                    continue
+                seen.add(nid)
+                found.append(nid)
+                stack.extend(reversed(children.get(nid, [])))
+            return found
+
+        fg_roots = []
+        for node in out:
+            label = str(node.get("label") or "").strip().lower()
+            if node.get("foreground") is True and (node.get("parent_id") is None or label == "foreground"):
+                fg_roots.append(node.get("id"))
+        if not fg_roots:
+            fg_roots = [node.get("id") for node in out if node.get("foreground") is True]
+
+        fg_ids = set()
+        for root_id in fg_roots:
+            fg_ids.update(descendants(root_id))
+        fg_ids = {nid for nid in fg_ids if node_by_id.get(nid, {}).get("foreground") is True}
+        if not fg_ids:
+            return (_rk_json_dump(out), "No foreground branch found")
+
+        parent_candidates = [node_by_id[nid] for nid in fg_ids if valid_bbox(node_by_id[nid].get("bbox")) and any(cid in fg_ids for cid in children.get(nid, []))]
+        if not parent_candidates:
+            parent_candidates = [node_by_id[nid] for nid in fg_ids if valid_bbox(node_by_id[nid].get("bbox"))]
+        if not parent_candidates:
+            return (_rk_json_dump(out), "No foreground bbox found")
+
+        selected = max(parent_candidates, key=area)
+        selected_id = selected.get("id")
+        box = selected.get("bbox")
+        x1, y1, x2, y2 = [float(v) for v in box]
+        bbox_w = max(0.0, x2 - x1)
+
+        all_boxes = [node.get("bbox") for node in out if valid_bbox(node.get("bbox"))]
+        if canvas_width and int(canvas_width) > 0:
+            cw = float(canvas_width)
+            canvas_x1 = 0.0
+        elif all_boxes:
+            canvas_x1 = min(float(b[0]) for b in all_boxes)
+            cw = max(float(b[2]) for b in all_boxes) - canvas_x1
+        else:
+            canvas_x1, cw = 0.0, max(1.0, x2)
+        cw = max(1.0, cw)
+        pad = float(padding or 0)
+
+        if align == "left":
+            new_x1 = canvas_x1 + pad
+        elif align == "right":
+            new_x1 = canvas_x1 + cw - pad - bbox_w
+        else:
+            new_x1 = canvas_x1 + (cw - bbox_w) / 2.0
+        dx = new_x1 - x1
+
+        moved_ids = descendants(selected_id)
+        for nid in moved_ids:
+            node = node_by_id.get(nid)
+            if not node or not valid_bbox(node.get("bbox")):
+                continue
+            bx1, by1, bx2, by2 = [float(v) for v in node["bbox"]]
+            node["bbox"] = [round(bx1 + dx), round(by1), round(bx2 + dx), round(by2)]
+
+        summary = f"Aligned foreground subtree rooted at id={selected_id} {align}; dx={dx:.2f}; moved={len(moved_ids)}"
+        return (_rk_json_dump(out), summary)
+
+
 class RK_SceneOverlay:
     CATEGORY = "roka/sam3"
 
@@ -1194,6 +1421,7 @@ class RK_Ideogram4JsonPromptComposer:
                 "elements_json": ("STRING", {"multiline": True}),
             },
             "optional": {
+                "high_level_description": ("STRING", {"multiline": True, "default": ""}),
                 "background": ("STRING", {"multiline": True, "default": ""}),
                 "aesthetics": ("STRING", {
                     "multiline": True,
@@ -1215,6 +1443,7 @@ class RK_Ideogram4JsonPromptComposer:
     def compose(
         self,
         elements_json,
+        high_level_description="",
         background="",
         aesthetics="photorealistic editorial image, composition preserved from the source reference",
         lighting="natural cinematic light matching the source composition",
@@ -1222,6 +1451,7 @@ class RK_Ideogram4JsonPromptComposer:
         medium="photorealistic digital image",
     ):
         elements = _rk_json_load(elements_json, [])
+        source_prompt = elements if isinstance(elements, dict) else {}
         if isinstance(elements, dict):
             # Accept either a full prompt or a compositional_deconstruction object for convenience.
             if isinstance(elements.get("compositional_deconstruction"), dict):
@@ -1231,7 +1461,11 @@ class RK_Ideogram4JsonPromptComposer:
         if not isinstance(elements, list):
             elements = []
 
+        if not high_level_description and isinstance(source_prompt.get("high_level_description"), str):
+            high_level_description = source_prompt.get("high_level_description", "")
+
         prompt = {
+            "high_level_description": str(high_level_description or ""),
             "style_description": {
                 "aesthetics": str(aesthetics or ""),
                 "lighting": str(lighting or ""),
@@ -1244,6 +1478,147 @@ class RK_Ideogram4JsonPromptComposer:
             },
         }
         return (_rk_json_dump(prompt),)
+
+
+class RK_IdeogramJsonResizer:
+    CATEGORY = "roka/ideogram"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "idgv4_json": ("STRING", {"multiline": True}),
+                "width": ("INT", {"default": 1024, "min": 0, "max": 100000, "step": 1}),
+                "height": ("INT", {"default": 1024, "min": 0, "max": 100000, "step": 1}),
+                "keep_proportion": (["stretch", "resize", "pad", "pad_edge", "pad_edge_pixel", "crop", "total_pixels"], {"default": "stretch"}),
+                "crop_position": (["center", "top", "bottom", "left", "right"], {"default": "center"}),
+                "divisible_by": ("INT", {"default": 2, "min": 0, "max": 512, "step": 1}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("idgv4_json",)
+    FUNCTION = "resize"
+
+    def resize(self, idgv4_json, width, height, keep_proportion="stretch", crop_position="center", divisible_by=2):
+        import copy
+        import math
+
+        data = _rk_json_load(idgv4_json, [])
+        out = copy.deepcopy(data)
+
+        if isinstance(out, dict) and isinstance(out.get("compositional_deconstruction"), dict):
+            elements = out["compositional_deconstruction"].get("elements", [])
+        elif isinstance(out, dict):
+            elements = out.get("elements", [])
+        elif isinstance(out, list):
+            elements = out
+        else:
+            elements = []
+        if not isinstance(elements, list):
+            elements = []
+
+        def valid_bbox(box):
+            return isinstance(box, list) and len(box) == 4
+
+        boxes = [el.get("bbox") for el in elements if isinstance(el, dict) and valid_bbox(el.get("bbox"))]
+        if not boxes:
+            return (_rk_json_dump(out),)
+
+        max_coord = max(max(abs(float(v)) for v in box) for box in boxes)
+        if max_coord <= 1000:
+            # Ideogram V4 boxes are normally normalized to a 1000x1000 coordinate space.
+            src_x1, src_y1, src_x2, src_y2 = 0.0, 0.0, 1000.0, 1000.0
+        else:
+            # Some IDG V4 payloads arrive unnormalized. Treat bbox as XYXY and infer
+            # a source viewport from the visible coordinate extents, anchored at origin.
+            src_x1 = 0.0
+            src_y1 = 0.0
+            src_x2 = max(float(b[2]) for b in boxes)
+            src_y2 = max(float(b[3]) for b in boxes)
+        src_w = max(1.0, src_x2 - src_x1)
+        src_h = max(1.0, src_y2 - src_y1)
+
+        target_w = int(width or src_w)
+        target_h = int(height or src_h)
+        if keep_proportion == "total_pixels":
+            total_pixels = max(1, target_w * target_h)
+            aspect = src_w / src_h
+            resize_w = int(math.sqrt(total_pixels * aspect))
+            resize_h = int(math.sqrt(total_pixels / aspect))
+        elif keep_proportion in ["resize", "pad", "pad_edge", "pad_edge_pixel", "crop"]:
+            if target_w == 0 and target_h == 0:
+                resize_w, resize_h = int(src_w), int(src_h)
+            elif target_w == 0:
+                ratio = target_h / src_h
+                resize_w, resize_h = round(src_w * ratio), target_h
+            elif target_h == 0:
+                ratio = target_w / src_w
+                resize_w, resize_h = target_w, round(src_h * ratio)
+            else:
+                ratio = (max if keep_proportion == "crop" else min)(target_w / src_w, target_h / src_h)
+                resize_w, resize_h = round(src_w * ratio), round(src_h * ratio)
+        else:
+            resize_w = target_w if target_w else int(src_w)
+            resize_h = target_h if target_h else int(src_h)
+
+        if int(divisible_by or 0) > 1:
+            div = int(divisible_by)
+            resize_w = max(div, resize_w - (resize_w % div))
+            resize_h = max(div, resize_h - (resize_h % div))
+            if keep_proportion in ["stretch"]:
+                target_w, target_h = resize_w, resize_h
+
+        offset_x = offset_y = 0.0
+        out_w, out_h = resize_w, resize_h
+        if keep_proportion in ["pad", "pad_edge", "pad_edge_pixel", "crop"] and target_w and target_h:
+            out_w, out_h = target_w, target_h
+            extra_x = target_w - resize_w
+            extra_y = target_h - resize_h
+            if crop_position == "top":
+                offset_x, offset_y = extra_x / 2.0, 0.0
+            elif crop_position == "bottom":
+                offset_x, offset_y = extra_x / 2.0, extra_y
+            elif crop_position == "left":
+                offset_x, offset_y = 0.0, extra_y / 2.0
+            elif crop_position == "right":
+                offset_x, offset_y = extra_x, extra_y / 2.0
+            else:
+                offset_x, offset_y = extra_x / 2.0, extra_y / 2.0
+
+        sx = resize_w / src_w
+        sy = resize_h / src_h
+
+        def tr_x(x):
+            return round((float(x) - src_x1) * sx + offset_x)
+
+        def tr_y(y):
+            return round((float(y) - src_y1) * sy + offset_y)
+
+        def clamp(v, lo, hi):
+            return max(lo, min(hi, int(v)))
+
+        kept_elements = []
+        for el in elements:
+            if not isinstance(el, dict) or not valid_bbox(el.get("bbox")):
+                kept_elements.append(el)
+                continue
+            x1, y1, x2, y2 = el["bbox"]
+            ny1, nx1, ny2, nx2 = tr_y(y1), tr_x(x1), tr_y(y2), tr_x(x2)
+            if keep_proportion == "crop" and target_w and target_h:
+                if ny2 <= 0 or ny1 >= out_h or nx2 <= 0 or nx1 >= out_w:
+                    continue
+                ny1, ny2 = clamp(ny1, 0, int(out_h)), clamp(ny2, 0, int(out_h))
+                nx1, nx2 = clamp(nx1, 0, int(out_w)), clamp(nx2, 0, int(out_w))
+            el["bbox"] = [ny1, nx1, ny2, nx2]
+            kept_elements.append(el)
+        elements[:] = kept_elements
+
+        if isinstance(out, dict):
+            out.setdefault("resolution", {})
+            if isinstance(out["resolution"], dict):
+                out["resolution"].update({"width": int(out_w), "height": int(out_h)})
+        return (_rk_json_dump(out),)
 
 
 class RK_SceneGraphAsciiRenderer:
@@ -1448,34 +1823,280 @@ class RK_SceneGraphRenderer:
 
 
 
+# ─────────────────────────────────────────────────────────────────
+#  Scene graph text substitution helpers
+# ─────────────────────────────────────────────────────────────────
+
+
+class RK_SceneGraphSubstituter:
+    CATEGORY = "roka/sam3"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "scenegraph": ("STRING", {"multiline": True}),
+                "substitutions": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "foreground.*.face: face, with a maniacal grin\nforeground.person.shirt: a beautiful off white shirt with black trimmings\nbackground.wall: a large obsidian black and white marble wall reflecting shards of light",
+                        "tooltip": "One rule per line: regex.path.to.node: replacement text. Use * as a path-segment wildcard.",
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("scenegraph", "summary")
+    FUNCTION = "substitute"
+
+    def _parse_rules(self, substitutions):
+        import re
+
+        rules = []
+        for line_no, raw_line in enumerate((substitutions or "").splitlines(), start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" not in line:
+                continue
+            path_expr, replacement = line.split(":", 1)
+            path_expr = path_expr.strip()
+            replacement = replacement.strip()
+            if not path_expr or not replacement:
+                continue
+
+            compiled = []
+            for segment in path_expr.split("."):
+                segment = segment.strip()
+                if segment == "*":
+                    segment = ".*"
+                compiled.append(re.compile(segment, re.IGNORECASE))
+            rules.append({"line": line_no, "path": path_expr, "patterns": compiled, "replacement": replacement})
+        return rules
+
+    def _node_label(self, node):
+        return str(node.get("label") or node.get("caption") or node.get("desc") or "").strip()
+
+    def _match_path(self, path_labels, patterns):
+        if len(path_labels) != len(patterns):
+            return False
+        return all(pattern.fullmatch(label or "") for pattern, label in zip(patterns, path_labels))
+
+    def substitute(self, scenegraph, substitutions):
+        import copy
+
+        nodes = _rk_json_load(scenegraph, [])
+        if not isinstance(nodes, list):
+            return (_rk_json_dump(nodes), "Input is not a scenegraph list")
+
+        out = [copy.deepcopy(node) for node in nodes if isinstance(node, dict)]
+        node_by_id = {node.get("id"): node for node in out}
+        children = {}
+        roots = []
+        for node in out:
+            node_id = node.get("id")
+            parent_id = node.get("parent_id")
+            if parent_id in node_by_id and parent_id != node_id:
+                children.setdefault(parent_id, []).append(node_id)
+            else:
+                roots.append(node_id)
+        for child_ids in children.values():
+            child_ids.sort(key=lambda value: str(value))
+        roots.sort(key=lambda value: str(value))
+
+        paths = {}
+        visited = set()
+
+        def walk(node_id, prefix):
+            if node_id in visited:
+                return
+            visited.add(node_id)
+            node = node_by_id.get(node_id)
+            if not isinstance(node, dict):
+                return
+            current = prefix + [self._node_label(node)]
+            paths[node_id] = current
+            for child_id in children.get(node_id, []):
+                walk(child_id, current)
+
+        for root_id in roots:
+            walk(root_id, [])
+        for node_id in node_by_id:
+            if node_id not in paths:
+                walk(node_id, [])
+
+        rules = self._parse_rules(substitutions)
+        applied = []
+        for node in out:
+            node_id = node.get("id")
+            path_labels = paths.get(node_id, [])
+            for rule in rules:
+                if self._match_path(path_labels, rule["patterns"]):
+                    if "original_label" not in node:
+                        node["original_label"] = node.get("label")
+                    node["label"] = rule["replacement"]
+                    node["caption"] = rule["replacement"]
+                    node["desc"] = rule["replacement"]
+                    applied.append(f"line {rule['line']} {rule['path']} -> id {node_id} ({'.'.join(path_labels)})")
+
+        summary = f"Applied {len(applied)} substitution(s) from {len(rules)} rule(s)"
+        if applied:
+            summary += "\n" + "\n".join(applied)
+        return (_rk_json_dump(out), summary)
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Frame / aspect-ratio helpers
+# ─────────────────────────────────────────────────────────────────
+
+
+_RK_FLUX_ASPECT_RATIOS = [
+    "1:1",
+    "4:3",
+    "3:4",
+    "7:5",
+    "5:7",
+    "7:9",
+    "8:5",
+    "19:9",
+    "9:32",
+    "16:9",
+    "9:16",
+    "21:9",
+    "2:3",
+    "3:2",
+]
+
+
+def _rk_parse_aspect_ratio(value):
+    import re
+
+    text = str(value or "1:1").strip()
+    match = re.search(r"(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)", text)
+    if not match:
+        raise ValueError(f"Invalid aspect ratio '{value}'. Use W:H, e.g. 4:3.")
+    w = float(match.group(1))
+    h = float(match.group(2))
+    if w <= 0 or h <= 0:
+        raise ValueError(f"Invalid aspect ratio '{value}'. Values must be positive.")
+    return w, h
+
+
+def _rk_snap_int(value, snap):
+    snap = max(1, int(snap or 1))
+    return max(snap, int(round(float(value) / snap) * snap))
+
+
+def _rk_aspect_label(width, height):
+    import math
+    from fractions import Fraction
+
+    width = max(1, int(width or 1))
+    height = max(1, int(height or 1))
+    gcd = math.gcd(width, height)
+    simple_w, simple_h = width // gcd, height // gcd
+    if simple_w <= 100 and simple_h <= 100:
+        return f"{simple_w}:{simple_h}"
+    frac = Fraction(width, height).limit_denominator(100)
+    return f"{frac.numerator}:{frac.denominator}"
+
+
+class RK_Frame:
+    CATEGORY = "roka/resolution"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "MP": ("FLOAT", {"default": 1.0, "min": 0.001, "max": 256.0, "step": 0.01, "tooltip": "Target megapixels (width × height / 1,000,000)."}),
+                "AspectRatio": (_RK_FLUX_ASPECT_RATIOS, {"default": "1:1", "tooltip": "W:H ratio. Includes ratios seen in FluxResCalc-style workflows."}),
+                "snap": ("INT", {"default": 2, "min": 1, "max": 1024, "step": 1, "tooltip": "Round width/height to nearest multiple of this value."}),
+            },
+            "optional": {
+                "custom_aspect_ratio": ("STRING", {"default": "", "tooltip": "Optional W:H override, e.g. 4:3, 1:1, 3:4."}),
+            },
+        }
+
+    RETURN_TYPES = ("INT", "INT")
+    RETURN_NAMES = ("width", "height")
+    FUNCTION = "calculate"
+
+    def calculate(self, MP=1.0, AspectRatio="1:1", snap=2, custom_aspect_ratio=""):
+        import math
+
+        ratio_text = custom_aspect_ratio.strip() if isinstance(custom_aspect_ratio, str) and custom_aspect_ratio.strip() else AspectRatio
+        ar_w, ar_h = _rk_parse_aspect_ratio(ratio_text)
+        area = max(1.0, float(MP) * 1_000_000.0)
+        width = math.sqrt(area * (ar_w / ar_h))
+        height = width / (ar_w / ar_h)
+        return (_rk_snap_int(width, snap), _rk_snap_int(height, snap))
+
+
+class RK_AspectRatio:
+    CATEGORY = "roka/resolution"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "width": ("INT", {"default": 1024, "min": 1, "max": 100000, "step": 1}),
+                "height": ("INT", {"default": 1024, "min": 1, "max": 100000, "step": 1}),
+            }
+        }
+
+    RETURN_TYPES = ("FLOAT", "STRING")
+    RETURN_NAMES = ("MP", "aspect_ratio")
+    FUNCTION = "calculate"
+
+    def calculate(self, width=1024, height=1024):
+        width = max(1, int(width or 1))
+        height = max(1, int(height or 1))
+        mp = (width * height) / 1_000_000.0
+        return (round(mp, 6), _rk_aspect_label(width, height))
+
+
 NODE_CLASS_MAPPINGS = {
+    "RK_Frame": RK_Frame,
+    "RK_AspectRatio": RK_AspectRatio,
     "RK_SceneGraph": RK_SceneGraph,
     "RK_LoadSAM3Model": RK_LoadSAM3Model,
     "RK_SpacyFilter": RK_SpacyFilter,
+    "RK_WordNetEntityFilter": RK_WordNetEntityFilter,
     "RK_SAM3TextSegmentation": RK_SAM3TextSegmentation,
     "RK_SAM3SceneGraph": RK_SAM3SceneGraph,
     "RK_SceneGraphReducer": RK_SceneGraphReducer,
+    "RK_SceneGraphSubstituter": RK_SceneGraphSubstituter,
     "RK_SceneGraphSegments": RK_SceneGraphSegments,
     "RK_SceneGraphComposer": RK_SceneGraphComposer,
+    "RK_ForegroundAlign": RK_ForegroundAlign,
     "RK_SceneOverlay": RK_SceneOverlay,
     "RK_SceneGraphToIdeogram4Json": RK_SceneGraphToIdeogram4Json,
     "RK_Ideogram4JsonPromptComposer": RK_Ideogram4JsonPromptComposer,
+    "RK_IdeogramJsonResizer": RK_IdeogramJsonResizer,
     "RK_SceneGraphAsciiRenderer": RK_SceneGraphAsciiRenderer,
     "RK_SceneGraphRenderer": RK_SceneGraphRenderer,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "RK_Frame": "RK Frame",
+    "RK_AspectRatio": "RK Aspect Ratio",
     "RK_SceneGraph": "RK Scene Graph Preview",
     "RK_LoadSAM3Model": "RK Load SAM3 Model",
     "RK_SpacyFilter": "RK spaCy Filter",
+    "RK_WordNetEntityFilter": "RK WordNet Entity Filter",
     "RK_SAM3TextSegmentation": "RK SAM3 Multi Text Segmentation",
     "RK_SAM3SceneGraph": "RK SAM3 Scene Graph",
     "RK_SceneGraphReducer": "RK SceneGraphReducer",
+    "RK_SceneGraphSubstituter": "RK SceneGraphSubstituter",
     "RK_SceneGraphSegments": "RK Scene Graph Segments",
     "RK_SceneGraphComposer": "RK SceneGraphComposer",
+    "RK_ForegroundAlign": "RK Foreground Align",
     "RK_SceneOverlay": "RK SceneOverlay",
     "RK_SceneGraphToIdeogram4Json": "RK SceneGraphToIdeogram4Json",
     "RK_Ideogram4JsonPromptComposer": "RK Ideogram4 Json Prompt Composer",
+    "RK_IdeogramJsonResizer": "RK Ideogram Json Resizer",
     "RK_SceneGraphAsciiRenderer": "RK SceneGraphAsciiRenderer",
     "RK_SceneGraphRenderer": "RK Scene Graph Renderer",
 }

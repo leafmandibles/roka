@@ -1,8 +1,8 @@
 {
   "id": "daeec208-e560-430d-8673-144c67ae454b",
   "revision": 0,
-  "last_node_id": 7,
-  "last_link_id": 9,
+  "last_node_id": 8,
+  "last_link_id": 11,
   "nodes": [
     {
       "id": 2,
@@ -163,9 +163,7 @@
         {
           "name": "boxes",
           "type": "STRING",
-          "links": [
-            7
-          ]
+          "links": []
         },
         {
           "name": "json",
@@ -204,6 +202,14 @@
       "mode": 0,
       "inputs": [
         {
+          "name": "json",
+          "type": "STRING",
+          "widget": {
+            "name": "json"
+          },
+          "link": 6
+        },
+        {
           "name": "masks",
           "type": "MASK",
           "link": 5
@@ -213,42 +219,20 @@
           "shape": 7,
           "type": "MASK",
           "link": null
-        },
-        {
-          "name": "background_mask",
-          "shape": 7,
-          "type": "MASK",
-          "link": null
-        },
-        {
-          "name": "json",
-          "type": "STRING",
-          "widget": {
-            "name": "json"
-          },
-          "link": 6
-        },
-        {
-          "name": "bboxes",
-          "type": "STRING",
-          "widget": {
-            "name": "bboxes"
-          },
-          "link": 7
         }
       ],
       "outputs": [
         {
           "name": "scenegraph",
           "type": "STRING",
-          "links": []
+          "links": [
+            10
+          ]
         },
         {
-          "name": "ascii",
+          "name": "bboxes",
           "type": "STRING",
-          "links": [
-            9
-          ]
+          "links": []
         }
       ],
       "properties": {
@@ -258,7 +242,6 @@
         }
       },
       "widgets_values": [
-        "",
         ""
       ]
     },
@@ -280,7 +263,7 @@
         {
           "name": "text",
           "type": "STRING",
-          "link": 9
+          "link": 11
         }
       ],
       "outputs": [
@@ -299,6 +282,49 @@
       },
       "widgets_values": [
         "0\n├── [0] sky\n├── [1] ground\n└── [2] person\n    └── [3] person"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "RK_SceneGraphAsciiRenderer",
+      "pos": [
+        2620,
+        210
+      ],
+      "size": [
+        360,
+        120
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "scenegraph",
+          "type": "STRING",
+          "widget": {
+            "name": "scenegraph"
+          },
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "ascii",
+          "type": "STRING",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RK_SceneGraphAsciiRenderer",
+        "ue_properties": {
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        ""
       ]
     }
   ],
@@ -332,7 +358,7 @@
       5,
       0,
       6,
-      0,
+      1,
       "MASK"
     ],
     [
@@ -340,21 +366,21 @@
       5,
       3,
       6,
-      3,
+      0,
       "STRING"
     ],
     [
-      7,
-      5,
-      2,
+      10,
       6,
-      4,
+      0,
+      8,
+      0,
       "STRING"
     ],
     [
-      9,
-      6,
-      1,
+      11,
+      8,
+      0,
       7,
       0,
       "STRING"

@@ -1,8 +1,8 @@
 {
   "id": "d7689273-6433-4583-98dd-2965ebe03085",
   "revision": 0,
-  "last_node_id": 12,
-  "last_link_id": 13,
+  "last_node_id": 14,
+  "last_link_id": 17,
   "nodes": [
     {
       "id": 7,
@@ -265,7 +265,7 @@
           "type": "STRING",
           "links": [
             11,
-            12
+            16
           ]
         },
         {
@@ -303,6 +303,14 @@
       "mode": 0,
       "inputs": [
         {
+          "name": "json",
+          "type": "STRING",
+          "widget": {
+            "name": "json"
+          },
+          "link": 6
+        },
+        {
           "name": "masks",
           "type": "MASK",
           "link": 5
@@ -312,42 +320,20 @@
           "shape": 7,
           "type": "MASK",
           "link": null
-        },
-        {
-          "name": "background_mask",
-          "shape": 7,
-          "type": "MASK",
-          "link": null
-        },
-        {
-          "name": "json",
-          "type": "STRING",
-          "widget": {
-            "name": "json"
-          },
-          "link": 6
-        },
-        {
-          "name": "bboxes",
-          "type": "STRING",
-          "widget": {
-            "name": "bboxes"
-          },
-          "link": 7
         }
       ],
       "outputs": [
         {
           "name": "scenegraph",
           "type": "STRING",
-          "links": []
+          "links": [
+            14
+          ]
         },
         {
-          "name": "ascii",
+          "name": "bboxes",
           "type": "STRING",
-          "links": [
-            13
-          ]
+          "links": []
         }
       ],
       "properties": {
@@ -357,7 +343,6 @@
         }
       },
       "widgets_values": [
-        "",
         ""
       ]
     },
@@ -379,7 +364,7 @@
         {
           "name": "text",
           "type": "STRING",
-          "link": 13
+          "link": 15
         }
       ],
       "outputs": [
@@ -397,7 +382,7 @@
         }
       },
       "widgets_values": [
-        "0\n├── [0] character\n│   └── [12] drawing\n│       └── [13] drawing\n│           ├── [4] dress\n│           ├── [8] arm\n│           ├── [9] arm\n│           └── [10] head\n│               └── [11] head\n│                   ├── [1] eye\n│                   ├── [2] eye\n│                   └── [3] smile\n├── [5] sky\n│   └── [6] background\n└── [7] background"
+        "0\n\u251c\u2500\u2500 [0] character\n\u2502   \u2514\u2500\u2500 [12] drawing\n\u2502       \u2514\u2500\u2500 [13] drawing\n\u2502           \u251c\u2500\u2500 [4] dress\n\u2502           \u251c\u2500\u2500 [8] arm\n\u2502           \u251c\u2500\u2500 [9] arm\n\u2502           \u2514\u2500\u2500 [10] head\n\u2502               \u2514\u2500\u2500 [11] head\n\u2502                   \u251c\u2500\u2500 [1] eye\n\u2502                   \u251c\u2500\u2500 [2] eye\n\u2502                   \u2514\u2500\u2500 [3] smile\n\u251c\u2500\u2500 [5] sky\n\u2502   \u2514\u2500\u2500 [6] background\n\u2514\u2500\u2500 [7] background"
       ]
     },
     {
@@ -412,7 +397,7 @@
         190
       ],
       "flags": {},
-      "order": 7,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {
@@ -431,7 +416,7 @@
           "widget": {
             "name": "text_prompt"
           },
-          "link": 12
+          "link": 17
         }
       ],
       "outputs": [
@@ -450,9 +435,7 @@
         {
           "name": "boxes",
           "type": "STRING",
-          "links": [
-            7
-          ]
+          "links": []
         },
         {
           "name": "json",
@@ -513,6 +496,93 @@
       "widgets_values": [
         "style, character, eye, smile, dress, reach, sky, background, hill, section, majority, point, arm, side, head, sense, movement, balance, palette, mix, tone, drawing"
       ]
+    },
+    {
+      "id": 13,
+      "type": "RK_SceneGraphAsciiRenderer",
+      "pos": [
+        2960,
+        180
+      ],
+      "size": [
+        360,
+        120
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "scenegraph",
+          "type": "STRING",
+          "widget": {
+            "name": "scenegraph"
+          },
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "ascii",
+          "type": "STRING",
+          "links": [
+            15
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RK_SceneGraphAsciiRenderer",
+        "ue_properties": {
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 14,
+      "type": "RK_WordNetEntityFilter",
+      "pos": [
+        2520,
+        540
+      ],
+      "size": [
+        420,
+        160
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "terms",
+          "type": "STRING",
+          "widget": {
+            "name": "terms"
+          },
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "filtered_terms",
+          "type": "STRING",
+          "links": [
+            17
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RK_WordNetEntityFilter",
+        "ue_properties": {
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "",
+        "composition,illustration,camera,photograph,image,photo,picture,quality,hole,skin,texture,background,foreground,scene,color,scheme,atmosphere,touch,light,red,blue,green,yellow,orange,brown,black,white,pink,purple,gray,grey,blonde,abstract,abstraction,attribute,feeling,cognition,communication,event,act,state,relation,measure"
+      ]
     }
   ],
   "links": [
@@ -545,7 +615,7 @@
       3,
       0,
       5,
-      0,
+      1,
       "MASK"
     ],
     [
@@ -553,15 +623,7 @@
       3,
       3,
       5,
-      3,
-      "STRING"
-    ],
-    [
-      7,
-      3,
-      2,
-      5,
-      4,
+      0,
       "STRING"
     ],
     [
@@ -597,19 +659,35 @@
       "STRING"
     ],
     [
-      12,
-      10,
+      14,
+      5,
       0,
-      3,
-      2,
+      13,
+      0,
       "STRING"
     ],
     [
+      15,
       13,
-      5,
-      1,
+      0,
       12,
       0,
+      "STRING"
+    ],
+    [
+      16,
+      10,
+      0,
+      14,
+      0,
+      "STRING"
+    ],
+    [
+      17,
+      14,
+      0,
+      3,
+      2,
       "STRING"
     ]
   ],

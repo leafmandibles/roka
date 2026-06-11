@@ -24,7 +24,6 @@ The table below shows Ideogram V4 JSON-prompt renders produced from Roka scene-g
 | Harbor panorama | simple | <img src="./docs/images/examples/harbor-simple-original-overlay.png" alt="Harbor simple original overlay" width="320"> | <img src="./docs/images/examples/harbor-simple-overlay.png" alt="Harbor simple rendered overlay" width="320"> |
 | Railway station | simple | <img src="./docs/images/examples/station-simple-original-overlay.png" alt="Station simple original overlay" width="320"> | <img src="./docs/images/examples/station-simple-overlay.png" alt="Station simple rendered overlay" width="320"> |
 
-
 ## Prerequisites 
 
  * models :  models/sam3/sam3.pt 
@@ -32,6 +31,8 @@ The table below shows Ideogram V4 JSON-prompt renders produced from Roka scene-g
  
 
 ## Workflows
+
+Agent/operator note: for saved Datavelt/Kaleidoscope workflow reruns, see [`docs/how-to-invoke-datavelt-workflows.md`](./docs/how-to-invoke-datavelt-workflows.md).
 
 ### RK Segmentation
 
