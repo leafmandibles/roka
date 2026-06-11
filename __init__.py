@@ -2149,11 +2149,8 @@ class RK_Frame:
         return {
             "required": {
                 "MP": ("FLOAT", {"default": 1.0, "min": 0.001, "max": 256.0, "step": 0.01, "tooltip": "Target megapixels (width × height / 1,000,000)."}),
-                "AspectRatio": (_RK_FLUX_ASPECT_RATIOS, {"default": "1:1", "tooltip": "W:H ratio. Includes ratios seen in FluxResCalc-style workflows."}),
+                "AspectRatio": ("STRING", {"default": "1:1", "tooltip": "Aspect ratio as W:H, e.g. 4:3, 16:9, 3:4."}),
                 "snap": ("INT", {"default": 2, "min": 1, "max": 1024, "step": 1, "tooltip": "Round width/height to nearest multiple of this value."}),
-            },
-            "optional": {
-                "custom_aspect_ratio": ("STRING", {"default": "", "tooltip": "Optional W:H override, e.g. 4:3, 1:1, 3:4."}),
             },
         }
 
@@ -2161,11 +2158,10 @@ class RK_Frame:
     RETURN_NAMES = ("width", "height")
     FUNCTION = "calculate"
 
-    def calculate(self, MP=1.0, AspectRatio="1:1", snap=2, custom_aspect_ratio=""):
+    def calculate(self, MP=1.0, AspectRatio="1:1", snap=2):
         import math
 
-        ratio_text = custom_aspect_ratio.strip() if isinstance(custom_aspect_ratio, str) and custom_aspect_ratio.strip() else AspectRatio
-        ar_w, ar_h = _rk_parse_aspect_ratio(ratio_text)
+        ar_w, ar_h = _rk_parse_aspect_ratio(AspectRatio)
         area = max(1.0, float(MP) * 1_000_000.0)
         width = math.sqrt(area * (ar_w / ar_h))
         height = width / (ar_w / ar_h)
