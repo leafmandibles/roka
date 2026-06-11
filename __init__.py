@@ -404,6 +404,144 @@ class RK_WordNetEntityFilter:
         return (", ".join(out),)
 
 
+class RK_WordnetFamily:
+    CATEGORY = "roka/text"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "words": (
+                    "STRING",
+                    {
+                        "default": "man, apple, painting, dress, sneakers, heels, woman, lingerie, ass, prince, king, grape",
+                        "multiline": True,
+                        "tooltip": "Comma-separated words. Each noun sense is expanded through WordNet hypernym paths back to the root.",
+                    },
+                ),
+            },
+            "optional": {
+                "max_senses_per_word": ("INT", {"default": 8, "min": 1, "max": 64}),
+                "max_paths_per_sense": ("INT", {"default": 4, "min": 1, "max": 32}),
+                "show_synset_ids": ("BOOLEAN", {"default": False}),
+                "show_definitions": ("BOOLEAN", {"default": False}),
+                "unknown_parent": ("STRING", {"default": "unresolved in WordNet"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("ascii_tree",)
+    FUNCTION = "render_tree"
+    OUTPUT_NODE = True
+
+    def render_tree(
+        self,
+        words,
+        max_senses_per_word=8,
+        max_paths_per_sense=4,
+        show_synset_ids=False,
+        show_definitions=False,
+        unknown_parent="unresolved in WordNet",
+    ):
+        root = _rk_wordnet_new_branch("entity")
+        unresolved_parent = _rk_wordnet_clean_label(unknown_parent) or "unresolved in WordNet"
+
+        try:
+            from nltk.corpus import wordnet as wn
+        except Exception as exc:
+            return (f"<WordNet unavailable: {exc}>",)
+
+        for word in _rk_wordnet_parse_words(words):
+            synsets = wn.synsets(word.replace(" ", "_"), pos=wn.NOUN)[:max_senses_per_word]
+            if not synsets:
+                _rk_wordnet_insert_labels(root, [unresolved_parent, word])
+                continue
+
+            for synset in synsets:
+                paths = synset.hypernym_paths()[:max_paths_per_sense]
+                if not paths:
+                    _rk_wordnet_insert_labels(root, [_rk_wordnet_synset_label(synset, show_synset_ids, show_definitions), word])
+                    continue
+
+                for path in paths:
+                    labels = [_rk_wordnet_synset_label(item, show_synset_ids, show_definitions) for item in path]
+                    if labels and labels[0].lower() == "entity":
+                        labels = labels[1:]
+                    labels.append(word)
+                    _rk_wordnet_insert_labels(root, labels)
+
+        return (_rk_wordnet_render_branch(root),)
+
+
+def _rk_wordnet_parse_words(words):
+    seen, parsed = set(), []
+    for raw_word in str(words).split(","):
+        word = _rk_wordnet_clean_label(raw_word)
+        key = word.lower()
+        if word and key not in seen:
+            parsed.append(word)
+            seen.add(key)
+    return parsed
+
+
+def _rk_wordnet_clean_label(value):
+    import re
+    return re.sub(r"\s+", " ", str(value).strip())
+
+
+def _rk_wordnet_new_branch(label):
+    return {"label": label, "children": {}}
+
+
+def _rk_wordnet_insert_labels(root, labels):
+    current = root
+    for label in labels:
+        label = _rk_wordnet_clean_label(label)
+        if not label:
+            continue
+        key = label.lower()
+        if key == current["label"].lower():
+            continue
+        if key not in current["children"]:
+            current["children"][key] = _rk_wordnet_new_branch(label)
+        current = current["children"][key]
+
+
+def _rk_wordnet_synset_label(synset, show_synset_ids, show_definitions):
+    name = synset.lemmas()[0].name().replace("_", " ")
+    extras = []
+    if show_synset_ids:
+        extras.append(synset.name())
+    if show_definitions:
+        extras.append(synset.definition())
+    return f"{name} ({'; '.join(extras)})" if extras else name
+
+
+def _rk_wordnet_render_branch(root):
+    lines = [root["label"]]
+    children = _rk_wordnet_sorted_children(root)
+    for index, child in enumerate(children):
+        _rk_wordnet_append_rendered_branch(lines, child, "", index == len(children) - 1)
+    return "\n".join(lines)
+
+
+def _rk_wordnet_append_rendered_branch(lines, branch, prefix, is_last):
+    connector = "└── " if is_last else "├── "
+    lines.append(f"{prefix}{connector}{branch['label']}")
+    child_prefix = prefix + ("    " if is_last else "│   ")
+    children = _rk_wordnet_sorted_children(branch)
+    for index, child in enumerate(children):
+        _rk_wordnet_append_rendered_branch(lines, child, child_prefix, index == len(children) - 1)
+
+
+def _rk_wordnet_sorted_children(branch):
+    return sorted(branch["children"].values(), key=lambda child: child["label"].lower())
+
+
+# Backward-compatible typo alias for workflows created during initial prototyping.
+RK_WorndetFamily = RK_WordnetFamily
+
+
 class RK_SAM3TextSegmentation:
     CATEGORY = "roka/sam3"
 
@@ -2064,6 +2202,8 @@ NODE_CLASS_MAPPINGS = {
     "RK_LoadSAM3Model": RK_LoadSAM3Model,
     "RK_SpacyFilter": RK_SpacyFilter,
     "RK_WordNetEntityFilter": RK_WordNetEntityFilter,
+    "RK_WordnetFamily": RK_WordnetFamily,
+    "RK_WorndetFamily": RK_WorndetFamily,
     "RK_SAM3TextSegmentation": RK_SAM3TextSegmentation,
     "RK_SAM3SceneGraph": RK_SAM3SceneGraph,
     "RK_SceneGraphReducer": RK_SceneGraphReducer,
@@ -2086,6 +2226,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RK_LoadSAM3Model": "RK Load SAM3 Model",
     "RK_SpacyFilter": "RK spaCy Filter",
     "RK_WordNetEntityFilter": "RK WordNet Entity Filter",
+    "RK_WordnetFamily": "RK WordNet Family",
+    "RK_WorndetFamily": "RK Worndet Family",
     "RK_SAM3TextSegmentation": "RK SAM3 Multi Text Segmentation",
     "RK_SAM3SceneGraph": "RK SAM3 Scene Graph",
     "RK_SceneGraphReducer": "RK SceneGraphReducer",
