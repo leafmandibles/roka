@@ -106,4 +106,175 @@ def sam3_depth_scene_graph(json: JSON_TEXT, masks: MASK, depth_map: IMAGE) -> st
     return jsonlib.dumps(nodes, indent=2)
 
 
+MODE = InputSpec(["relative", "absolute"], default="relative")
+
+
+def _node_id(node: dict[str, object], fallback: int) -> int:
+    try:
+        return int(node.get("id", fallback))
+    except Exception:
+        return fallback
+
+
+def _depth_score(node: dict[str, object]) -> float | None:
+    scores = node.get("depth_scores")
+    value = scores.get("nearest_chunk") if isinstance(scores, dict) else None
+    try:
+        return float(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def _depth_bucket(score: float | None, mode: str, lo: float, hi: float) -> str:
+    if score is None:
+        return "background"
+    if mode == "absolute":
+        t = max(0.0, min(1.0, score))
+    else:
+        t = 1.0 if hi <= lo else (score - lo) / (hi - lo)
+    if t >= 2.0 / 3.0:
+        return "foreground"
+    if t >= 1.0 / 3.0:
+        return "midground"
+    return "background"
+
+
+def _clean_label(value: object) -> str:
+    return str(value or "item").strip() or "item"
+
+
+def _label_union(ids: list[int], node_by_id: dict[int, dict[str, object]]) -> str:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for nid in ids:
+        label = _clean_label(node_by_id.get(nid, {}).get("label"))
+        key = label.lower()
+        if key not in seen:
+            seen.add(key)
+            labels.append(label)
+    return ", ".join(labels) or "item"
+
+
+def _bbox_union(ids: list[int], node_by_id: dict[int, dict[str, object]], masks: object) -> list[int] | None:
+    boxes: list[list[int]] = []
+    n_masks = int(masks.shape[0]) if masks is not None else 0
+    for nid in ids:
+        box = node_by_id.get(nid, {}).get("bbox")
+        if isinstance(box, list) and len(box) == 4:
+            boxes.append([int(v) for v in box])
+        elif masks is not None and 0 <= nid < n_masks:
+            boxes.append(_bbox_from_mask(_mask_2d(masks[nid])))
+    if not boxes:
+        return None
+    return [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)]
+
+
+@node("roka/sam3/RK_SceneGraphDepthReducer", returns=("reduced_scenegraph",))
+def scene_graph_depth_reducer(scenegraph: JSON_TEXT, masks: MASK, mode: MODE = "relative") -> str:
+    """Bucket a depth-scored scene graph into foreground, midground, and background."""
+    import json as jsonlib
+    import torch
+
+    nodes = _json_load(scenegraph, [])
+    nodes = nodes if isinstance(nodes, list) else []
+    node_by_id = {_node_id(node, i): node for i, node in enumerate(nodes) if isinstance(node, dict)}
+    ordered_ids = list(node_by_id.keys())
+    scores = [_depth_score(node_by_id[nid]) for nid in ordered_ids]
+    valid_scores = [score for score in scores if score is not None]
+    lo, hi = (min(valid_scores), max(valid_scores)) if valid_scores else (0.0, 1.0)
+
+    children: dict[int, list[int]] = {}
+    for nid in ordered_ids:
+        try:
+            parent = node_by_id[nid].get("parent_id")
+            parent = int(parent) if parent is not None else None
+        except Exception:
+            parent = None
+        if parent in node_by_id and parent != nid:
+            children.setdefault(parent, []).append(nid)
+
+    bucket_by_id = {nid: _depth_bucket(_depth_score(node_by_id[nid]), str(mode), lo, hi) for nid in ordered_ids}
+    out: list[dict[str, object]] = []
+    next_id = 0
+
+    def add(label: str, parent_id: int | None, source_ids: list[int] | None = None) -> int:
+        nonlocal next_id
+        rid = next_id
+        next_id += 1
+        item: dict[str, object] = {"id": rid, "label": label, "parent_id": parent_id}
+        if source_ids is not None:
+            item.update({"bbox": _bbox_union(source_ids, node_by_id, masks), "source_ids": source_ids})
+        out.append(item)
+        return rid
+
+    def descendants(nid: int, bucket: str) -> list[int]:
+        found: list[int] = []
+        def walk(current: int) -> None:
+            if bucket_by_id.get(current) != bucket:
+                return
+            found.append(current)
+            for child in children.get(current, []):
+                walk(child)
+        walk(nid)
+        return found
+
+    def grouped_overlaps(ids: list[int]) -> list[list[int]]:
+        n_masks = int(masks.shape[0]) if masks is not None else 0
+        valid = [nid for nid in ids if 0 <= nid < n_masks]
+        if len(valid) < 2:
+            return [[nid] for nid in ids]
+        parent = {nid: nid for nid in ids}
+        mask_by_id = {nid: _mask_2d(masks[nid]) for nid in valid}
+
+        def find(nid: int) -> int:
+            while parent[nid] != nid:
+                parent[nid] = parent[parent[nid]]
+                nid = parent[nid]
+            return nid
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for offset, a in enumerate(valid):
+            for b in valid[offset + 1:]:
+                if torch.logical_and(mask_by_id[a], mask_by_id[b]).any().item():
+                    union(a, b)
+        groups: dict[int, list[int]] = {}
+        for nid in ids:
+            groups.setdefault(find(nid), []).append(nid)
+        return list(groups.values())
+
+    def emit_group(ids: list[int], parent_id: int, bucket: str) -> None:
+        if len(ids) > 1:
+            source_ids = sorted({sid for nid in ids for sid in descendants(nid, bucket)})
+            add(_label_union(source_ids, node_by_id), parent_id, source_ids)
+            return
+        emit(ids[0], parent_id, bucket)
+
+    def emit(nid: int, parent_id: int, bucket: str) -> None:
+        new_id = add(_clean_label(node_by_id[nid].get("label")), parent_id, [nid])
+        child_ids = [child for child in children.get(nid, []) if bucket_by_id.get(child) == bucket]
+        for group in grouped_overlaps(child_ids):
+            emit_group(group, new_id, bucket)
+
+    for bucket in ("foreground", "midground", "background"):
+        bucket_id = add(bucket, None)
+        bucket_ids = [nid for nid in ordered_ids if bucket_by_id.get(nid) == bucket]
+        roots = []
+        for nid in bucket_ids:
+            parent = node_by_id[nid].get("parent_id")
+            try:
+                parent = int(parent) if parent is not None else None
+            except Exception:
+                parent = None
+            if parent not in bucket_ids:
+                roots.append(nid)
+        for group in grouped_overlaps(roots):
+            emit_group(group, bucket_id, bucket)
+
+    return jsonlib.dumps(out, indent=2)
+
+
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
