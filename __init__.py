@@ -186,16 +186,9 @@ def _rk_sam3_load_module(rel_name, file_name):
 
 
 def _rk_import_sam3_grounding():
-    import sys
-
-    for module in list(sys.modules.values()):
-        mappings = getattr(module, "NODE_CLASS_MAPPINGS", None)
-        if isinstance(mappings, dict) and "SAM3Grounding" in mappings and isinstance(mappings["SAM3Grounding"], type):
-            return mappings["SAM3Grounding"], _rk_comfy_image_to_pil, _rk_pil_to_comfy_image
-        cls = getattr(module, "SAM3Grounding", None)
-        if isinstance(cls, type):
-            return cls, _rk_comfy_image_to_pil, _rk_pil_to_comfy_image
-
+    # Always use roka's own SAM3Grounding. Scanning sys.modules for any class
+    # named "SAM3Grounding" picks up other SAM3 node packs (e.g. comfyui-sam3),
+    # whose class has an incompatible API and breaks segment().
     _rk_sam3_load_module("utils", "utils.py")
     _rk_sam3_load_module("sam3_model_patcher", "sam3_model_patcher.py")
     segmentation = _rk_sam3_load_module("segmentation", "segmentation.py")
