@@ -2191,9 +2191,167 @@ class RK_AspectRatio:
         return (round(mp, 6), _rk_aspect_label(width, height))
 
 
+class _RKAnyType(str):
+    def __ne__(self, other):
+        return False
+
+
+RK_ANY = _RKAnyType("*")
+
+
+def _rk_roka_cache_root():
+    import os
+
+    try:
+        import folder_paths
+        output_dir = folder_paths.get_output_directory()
+    except Exception:
+        output_dir = os.path.join(os.getcwd(), "output")
+    return os.path.join(output_dir, "roka_cache")
+
+
+def _rk_cache_safe_part(value, name):
+    import os
+
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{name} must not be empty")
+    if text in {".", ".."}:
+        raise ValueError(f"{name} must not be a relative path segment")
+    if os.path.basename(text) != text or "/" in text or "\\" in text:
+        raise ValueError(f"{name} must be a plain filename, not a path: {text!r}")
+    return text
+
+
+def _rk_cache_path(hashid, label=None):
+    import os
+
+    safe_hashid = _rk_cache_safe_part(hashid, "hashid")
+    root = _rk_roka_cache_root()
+    if label is None:
+        return os.path.join(root, safe_hashid)
+    safe_label = _rk_cache_safe_part(label, "label")
+    return os.path.join(root, safe_hashid, safe_label)
+
+
+class RK_HashFile:
+    CATEGORY = "roka/cache"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "file_path": ("STRING", {"default": ""}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("hashid",)
+    FUNCTION = "hash_file"
+
+    def hash_file(self, file_path=""):
+        import hashlib
+        import os
+
+        path = str(file_path or "").strip()
+        if not path:
+            raise ValueError("file_path must not be empty")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"File not found: {path}")
+
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return (h.hexdigest(),)
+
+
+class RK_HashCache:
+    CATEGORY = "roka/cache"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "hashid": ("STRING", {"default": ""}),
+                "data": (RK_ANY,),
+                "label": ("STRING", {"default": "data"}),
+            }
+        }
+
+    RETURN_TYPES = (RK_ANY,)
+    RETURN_NAMES = ("data",)
+    FUNCTION = "cache"
+
+    def cache(self, hashid="", data=None, label="data"):
+        import os
+        import pickle
+
+        path = _rk_cache_path(hashid, label)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        return (data,)
+
+
+class RK_CacheGet:
+    CATEGORY = "roka/cache"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "hashid": ("STRING", {"default": ""}),
+                "label": ("STRING", {"default": "data"}),
+            }
+        }
+
+    RETURN_TYPES = (RK_ANY,)
+    RETURN_NAMES = ("data",)
+    FUNCTION = "get"
+
+    def get(self, hashid="", label="data"):
+        import pickle
+
+        path = _rk_cache_path(hashid, label)
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        return (data,)
+
+
+class RK_CacheInfo:
+    CATEGORY = "roka/cache"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "hashid": ("STRING", {"default": ""}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("labels_json",)
+    FUNCTION = "info"
+
+    def info(self, hashid=""):
+        import json
+        import os
+
+        cache_dir = _rk_cache_path(hashid)
+        if not os.path.isdir(cache_dir):
+            return ("[]",)
+        labels = sorted(name for name in os.listdir(cache_dir) if os.path.isfile(os.path.join(cache_dir, name)))
+        return (json.dumps(labels, ensure_ascii=False),)
+
+
 NODE_CLASS_MAPPINGS = {
     "RK_Frame": RK_Frame,
     "RK_AspectRatio": RK_AspectRatio,
+    "RK_HashFile": RK_HashFile,
+    "RK_HashCache": RK_HashCache,
+    "RK_CacheGet": RK_CacheGet,
+    "RK_CacheInfo": RK_CacheInfo,
     "RK_SceneGraph": RK_SceneGraph,
     "RK_LoadSAM3Model": RK_LoadSAM3Model,
     "RK_SpacyFilter": RK_SpacyFilter,
@@ -2218,6 +2376,10 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RK_Frame": "RK Frame",
     "RK_AspectRatio": "RK Aspect Ratio",
+    "RK_HashFile": "RK Hash File",
+    "RK_HashCache": "RK Hash Cache",
+    "RK_CacheGet": "RK Cache Get",
+    "RK_CacheInfo": "RK Cache Info",
     "RK_SceneGraph": "RK Scene Graph Preview",
     "RK_LoadSAM3Model": "RK Load SAM3 Model",
     "RK_SpacyFilter": "RK spaCy Filter",
@@ -2238,5 +2400,30 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RK_SceneGraphAsciiRenderer": "RK SceneGraphAsciiRenderer",
     "RK_SceneGraphRenderer": "RK Scene Graph Renderer",
 }
+
+# Experimental annotation-based versions of small pure/helper nodes. These
+# intentionally override the legacy class implementations above while keeping the
+# same node ids.
+try:
+    from .frames import NODE_CLASS_MAPPINGS as _FRAME_NODE_CLASS_MAPPINGS
+    from .frames import NODE_DISPLAY_NAME_MAPPINGS as _FRAME_NODE_DISPLAY_NAME_MAPPINGS
+    from .cache import NODE_CLASS_MAPPINGS as _CACHE_NODE_CLASS_MAPPINGS
+    from .cache import NODE_DISPLAY_NAME_MAPPINGS as _CACHE_NODE_DISPLAY_NAME_MAPPINGS
+    from .scenegraphs import NODE_CLASS_MAPPINGS as _SCENEGRAPH_NODE_CLASS_MAPPINGS
+    from .scenegraphs import NODE_DISPLAY_NAME_MAPPINGS as _SCENEGRAPH_NODE_DISPLAY_NAME_MAPPINGS
+except ImportError:
+    from frames import NODE_CLASS_MAPPINGS as _FRAME_NODE_CLASS_MAPPINGS
+    from frames import NODE_DISPLAY_NAME_MAPPINGS as _FRAME_NODE_DISPLAY_NAME_MAPPINGS
+    from cache import NODE_CLASS_MAPPINGS as _CACHE_NODE_CLASS_MAPPINGS
+    from cache import NODE_DISPLAY_NAME_MAPPINGS as _CACHE_NODE_DISPLAY_NAME_MAPPINGS
+    from scenegraphs import NODE_CLASS_MAPPINGS as _SCENEGRAPH_NODE_CLASS_MAPPINGS
+    from scenegraphs import NODE_DISPLAY_NAME_MAPPINGS as _SCENEGRAPH_NODE_DISPLAY_NAME_MAPPINGS
+
+NODE_CLASS_MAPPINGS.update(_FRAME_NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(_FRAME_NODE_DISPLAY_NAME_MAPPINGS)
+NODE_CLASS_MAPPINGS.update(_CACHE_NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(_CACHE_NODE_DISPLAY_NAME_MAPPINGS)
+NODE_CLASS_MAPPINGS.update(_SCENEGRAPH_NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(_SCENEGRAPH_NODE_DISPLAY_NAME_MAPPINGS)
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
