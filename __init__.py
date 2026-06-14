@@ -1456,99 +1456,6 @@ class RK_SceneOverlay:
         return (torch.from_numpy(arr).unsqueeze(0),)
 
 
-class RK_SceneGraphToIdeogram4Json:
-    CATEGORY = "roka/sam3"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "scenegraph": ("STRING", {"multiline": True}),
-            },
-            "optional": {
-                "mode": (["all", "foreground", "background", "leaves"], {"default": "all"}),
-                "megapixels": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 64.0, "step": 0.01}),
-            },
-        }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("elements_json",)
-    FUNCTION = "build"
-
-    def build(self, scenegraph, mode="all", megapixels=1.0):
-        import json as jsonlib
-        import math
-
-        nodes = _rk_json_load(scenegraph, [])
-        if not isinstance(nodes, list):
-            nodes = []
-        nodes = [node for node in nodes if isinstance(node, dict)]
-
-        node_by_id = {node.get("id"): node for node in nodes}
-        children = {}
-        for node in nodes:
-            node_id = node.get("id")
-            parent_id = node.get("parent_id")
-            if parent_id in node_by_id and parent_id != node_id:
-                children.setdefault(parent_id, []).append(node_id)
-
-        def valid_bbox(box):
-            return isinstance(box, list) and len(box) == 4
-
-        def is_wrapper(node):
-            label = str(node.get("label") or "").strip().lower()
-            return label in {"foreground", "background"} and node.get("parent_id") is None
-
-        all_boxes = [node.get("bbox") for node in nodes if valid_bbox(node.get("bbox"))]
-        if not all_boxes:
-            return (jsonlib.dumps([], indent=2),)
-
-        scene_x1 = min(float(box[0]) for box in all_boxes)
-        scene_y1 = min(float(box[1]) for box in all_boxes)
-        scene_x2 = max(float(box[2]) for box in all_boxes)
-        scene_y2 = max(float(box[3]) for box in all_boxes)
-        scene_w = max(1.0, scene_x2 - scene_x1)
-        scene_h = max(1.0, scene_y2 - scene_y1)
-
-        target_area = max(1.0, float(megapixels or 1.0) * 1_000_000.0)
-        aspect = scene_w / scene_h
-        canvas_w = math.sqrt(target_area * aspect)
-        canvas_h = canvas_w / aspect
-
-        def include_node(node):
-            if is_wrapper(node) or not valid_bbox(node.get("bbox")):
-                return False
-            if mode == "foreground":
-                return node.get("foreground") is True
-            if mode == "background":
-                return node.get("foreground") is False
-            if mode == "leaves":
-                return len(children.get(node.get("id"), [])) == 0
-            return True
-
-        def norm_x(value):
-            scaled = (float(value) - scene_x1) / scene_w * canvas_w
-            return max(0, min(1000, round(scaled / canvas_w * 1000)))
-
-        def norm_y(value):
-            scaled = (float(value) - scene_y1) / scene_h * canvas_h
-            return max(0, min(1000, round(scaled / canvas_h * 1000)))
-
-        elements = []
-        for node in nodes:
-            if not include_node(node):
-                continue
-            x1, y1, x2, y2 = node.get("bbox")
-            desc = str(node.get("caption") or node.get("desc") or node.get("label") or "item").strip() or "item"
-            elements.append({
-                "type": "obj",
-                "bbox": [norm_y(y1), norm_x(x1), norm_y(y2), norm_x(x2)],
-                "desc": desc,
-            })
-
-        return (jsonlib.dumps(elements, indent=2, ensure_ascii=False),)
-
-
 class RK_Ideogram4JsonPromptComposer:
     CATEGORY = "roka/ideogram"
 
@@ -2413,6 +2320,8 @@ try:
     from .scenegraphs import NODE_DISPLAY_NAME_MAPPINGS as _SCENEGRAPH_NODE_DISPLAY_NAME_MAPPINGS
     from .structuredoutputs import NODE_CLASS_MAPPINGS as _STRUCTUREDOUTPUT_NODE_CLASS_MAPPINGS
     from .structuredoutputs import NODE_DISPLAY_NAME_MAPPINGS as _STRUCTUREDOUTPUT_NODE_DISPLAY_NAME_MAPPINGS
+    from .ideogram import NODE_CLASS_MAPPINGS as _IDEOGRAM_NODE_CLASS_MAPPINGS
+    from .ideogram import NODE_DISPLAY_NAME_MAPPINGS as _IDEOGRAM_NODE_DISPLAY_NAME_MAPPINGS
 except ImportError:
     from frames import NODE_CLASS_MAPPINGS as _FRAME_NODE_CLASS_MAPPINGS
     from frames import NODE_DISPLAY_NAME_MAPPINGS as _FRAME_NODE_DISPLAY_NAME_MAPPINGS
@@ -2422,6 +2331,8 @@ except ImportError:
     from scenegraphs import NODE_DISPLAY_NAME_MAPPINGS as _SCENEGRAPH_NODE_DISPLAY_NAME_MAPPINGS
     from structuredoutputs import NODE_CLASS_MAPPINGS as _STRUCTUREDOUTPUT_NODE_CLASS_MAPPINGS
     from structuredoutputs import NODE_DISPLAY_NAME_MAPPINGS as _STRUCTUREDOUTPUT_NODE_DISPLAY_NAME_MAPPINGS
+    from ideogram import NODE_CLASS_MAPPINGS as _IDEOGRAM_NODE_CLASS_MAPPINGS
+    from ideogram import NODE_DISPLAY_NAME_MAPPINGS as _IDEOGRAM_NODE_DISPLAY_NAME_MAPPINGS
 
 NODE_CLASS_MAPPINGS.update(_FRAME_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(_FRAME_NODE_DISPLAY_NAME_MAPPINGS)
@@ -2431,5 +2342,7 @@ NODE_CLASS_MAPPINGS.update(_SCENEGRAPH_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(_SCENEGRAPH_NODE_DISPLAY_NAME_MAPPINGS)
 NODE_CLASS_MAPPINGS.update(_STRUCTUREDOUTPUT_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(_STRUCTUREDOUTPUT_NODE_DISPLAY_NAME_MAPPINGS)
+NODE_CLASS_MAPPINGS.update(_IDEOGRAM_NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(_IDEOGRAM_NODE_DISPLAY_NAME_MAPPINGS)
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
