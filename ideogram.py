@@ -8,6 +8,14 @@ except ImportError:  # allows quick local import tests outside package loading
 
 JSON_TEXT = String(multiline=True)
 QUERY_TEXT = String(default="", multiline=True)
+EMPTY_TEXT = String(default="", multiline=True)
+AESTHETICS_TEXT = String(
+    default="photorealistic editorial image, composition preserved from the source reference",
+    multiline=True,
+)
+LIGHTING_TEXT = String(default="natural cinematic light matching the source composition", multiline=True)
+PHOTO_TEXT = String(default="high quality realistic photograph", multiline=True)
+MEDIUM_TEXT = String(default="photorealistic digital image", multiline=True)
 
 
 def _json_load(text: str, fallback: object) -> object:
@@ -17,6 +25,49 @@ def _json_load(text: str, fallback: object) -> object:
         return json.loads(text or "")
     except Exception:
         return fallback
+
+
+@node("roka/ideogram/RK_Ideogram4JsonPromptComposer", returns=("json_prompt",))
+def ideogram4_json_prompt_composer(
+    elements_json: JSON_TEXT,
+    high_level_description: EMPTY_TEXT = "",
+    background: EMPTY_TEXT = "",
+    aesthetics: AESTHETICS_TEXT = "photorealistic editorial image, composition preserved from the source reference",
+    lighting: LIGHTING_TEXT = "natural cinematic light matching the source composition",
+    photo: PHOTO_TEXT = "high quality realistic photograph",
+    medium: MEDIUM_TEXT = "photorealistic digital image",
+) -> str:
+    """Compose a full Ideogram v4 JSON prompt from element JSON."""
+    import json as jsonlib
+
+    elements = _json_load(elements_json, [])
+    source_prompt = elements if isinstance(elements, dict) else {}
+    if isinstance(elements, dict):
+        # Accept either a full prompt or a compositional_deconstruction object for convenience.
+        if isinstance(elements.get("compositional_deconstruction"), dict):
+            elements = elements["compositional_deconstruction"].get("elements", [])
+        else:
+            elements = elements.get("elements", [])
+    if not isinstance(elements, list):
+        elements = []
+
+    if not high_level_description and isinstance(source_prompt.get("high_level_description"), str):
+        high_level_description = source_prompt.get("high_level_description", "")
+
+    prompt = {
+        "high_level_description": str(high_level_description or ""),
+        "style_description": {
+            "aesthetics": str(aesthetics or ""),
+            "lighting": str(lighting or ""),
+            "photo": str(photo or ""),
+            "medium": str(medium or ""),
+        },
+        "compositional_deconstruction": {
+            "background": str(background or ""),
+            "elements": elements,
+        },
+    }
+    return jsonlib.dumps(prompt, indent=2, ensure_ascii=False)
 
 
 @node("roka/sam3/RK_SceneGraphToIdeogram4Json", returns=("elements_json",))

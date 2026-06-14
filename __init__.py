@@ -1456,75 +1456,6 @@ class RK_SceneOverlay:
         return (torch.from_numpy(arr).unsqueeze(0),)
 
 
-class RK_Ideogram4JsonPromptComposer:
-    CATEGORY = "roka/ideogram"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "elements_json": ("STRING", {"multiline": True}),
-            },
-            "optional": {
-                "high_level_description": ("STRING", {"multiline": True, "default": ""}),
-                "background": ("STRING", {"multiline": True, "default": ""}),
-                "aesthetics": ("STRING", {
-                    "multiline": True,
-                    "default": "photorealistic editorial image, composition preserved from the source reference",
-                }),
-                "lighting": ("STRING", {
-                    "multiline": True,
-                    "default": "natural cinematic light matching the source composition",
-                }),
-                "photo": ("STRING", {"multiline": True, "default": "high quality realistic photograph"}),
-                "medium": ("STRING", {"multiline": True, "default": "photorealistic digital image"}),
-            },
-        }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("json_prompt",)
-    FUNCTION = "compose"
-
-    def compose(
-        self,
-        elements_json,
-        high_level_description="",
-        background="",
-        aesthetics="photorealistic editorial image, composition preserved from the source reference",
-        lighting="natural cinematic light matching the source composition",
-        photo="high quality realistic photograph",
-        medium="photorealistic digital image",
-    ):
-        elements = _rk_json_load(elements_json, [])
-        source_prompt = elements if isinstance(elements, dict) else {}
-        if isinstance(elements, dict):
-            # Accept either a full prompt or a compositional_deconstruction object for convenience.
-            if isinstance(elements.get("compositional_deconstruction"), dict):
-                elements = elements["compositional_deconstruction"].get("elements", [])
-            else:
-                elements = elements.get("elements", [])
-        if not isinstance(elements, list):
-            elements = []
-
-        if not high_level_description and isinstance(source_prompt.get("high_level_description"), str):
-            high_level_description = source_prompt.get("high_level_description", "")
-
-        prompt = {
-            "high_level_description": str(high_level_description or ""),
-            "style_description": {
-                "aesthetics": str(aesthetics or ""),
-                "lighting": str(lighting or ""),
-                "photo": str(photo or ""),
-                "medium": str(medium or ""),
-            },
-            "compositional_deconstruction": {
-                "background": str(background or ""),
-                "elements": elements,
-            },
-        }
-        return (_rk_json_dump(prompt),)
-
-
 class RK_IdeogramJsonResizer:
     CATEGORY = "roka/ideogram"
 
@@ -1664,70 +1595,6 @@ class RK_IdeogramJsonResizer:
             if isinstance(out["resolution"], dict):
                 out["resolution"].update({"width": int(out_w), "height": int(out_h)})
         return (_rk_json_dump(out),)
-
-
-class RK_SceneGraphAsciiRenderer:
-    CATEGORY = "roka/sam3"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "scenegraph": ("STRING", {"multiline": True}),
-            },
-        }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("ascii",)
-    FUNCTION = "render"
-
-    def render(self, scenegraph):
-        nodes = _rk_json_load(scenegraph, [])
-        if not isinstance(nodes, list):
-            nodes = []
-
-        node_by_id = {node.get("id"): node for node in nodes if isinstance(node, dict)}
-        children = {}
-        roots = []
-
-        for node_id, node in node_by_id.items():
-            parent = node.get("parent_id")
-            if parent is None or parent not in node_by_id or parent == node_id:
-                roots.append(node_id)
-            else:
-                children.setdefault(parent, []).append(node_id)
-
-        for child_list in children.values():
-            child_list.sort()
-        roots.sort()
-
-        def node_label(node_id):
-            node = node_by_id.get(node_id, {"id": node_id, "label": "item"})
-            label = node.get("caption") or node.get("desc") or node.get("label") or "item"
-            return f"{node_id}: {label}"
-
-        lines = []
-        visited = set()
-
-        def walk(node_id, prefix="", is_last=True):
-            connector = "└── " if is_last else "├── "
-            if node_id in visited:
-                lines.append(f"{prefix}{connector}{node_label(node_id)} ↩")
-                return
-            visited.add(node_id)
-            lines.append(f"{prefix}{connector}{node_label(node_id)}")
-            next_prefix = prefix + ("    " if is_last else "│   ")
-            child_list = children.get(node_id, [])
-            for child_pos, child_id in enumerate(child_list):
-                walk(child_id, next_prefix, child_pos == len(child_list) - 1)
-
-        for root_pos, root_id in enumerate(roots):
-            walk(root_id, "", root_pos == len(roots) - 1)
-        for node_id in sorted(node_by_id):
-            if node_id not in visited:
-                walk(node_id, "", True)
-
-        return ("SceneGraph\n" + "\n".join(lines) if lines else "SceneGraph\n(empty)",)
 
 
 class RK_SceneGraphRenderer:
@@ -2273,10 +2140,7 @@ NODE_CLASS_MAPPINGS = {
     "RK_SceneGraphComposer": RK_SceneGraphComposer,
     "RK_ForegroundAlign": RK_ForegroundAlign,
     "RK_SceneOverlay": RK_SceneOverlay,
-    "RK_SceneGraphToIdeogram4Json": RK_SceneGraphToIdeogram4Json,
-    "RK_Ideogram4JsonPromptComposer": RK_Ideogram4JsonPromptComposer,
     "RK_IdeogramJsonResizer": RK_IdeogramJsonResizer,
-    "RK_SceneGraphAsciiRenderer": RK_SceneGraphAsciiRenderer,
     "RK_SceneGraphRenderer": RK_SceneGraphRenderer,
 }
 
@@ -2301,10 +2165,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RK_SceneGraphComposer": "RK SceneGraphComposer",
     "RK_ForegroundAlign": "RK Foreground Align",
     "RK_SceneOverlay": "RK SceneOverlay",
-    "RK_SceneGraphToIdeogram4Json": "RK SceneGraphToIdeogram4Json",
-    "RK_Ideogram4JsonPromptComposer": "RK Ideogram4 Json Prompt Composer",
     "RK_IdeogramJsonResizer": "RK Ideogram Json Resizer",
-    "RK_SceneGraphAsciiRenderer": "RK SceneGraphAsciiRenderer",
     "RK_SceneGraphRenderer": "RK Scene Graph Renderer",
 }
 
@@ -2322,6 +2183,8 @@ try:
     from .structuredoutputs import NODE_DISPLAY_NAME_MAPPINGS as _STRUCTUREDOUTPUT_NODE_DISPLAY_NAME_MAPPINGS
     from .ideogram import NODE_CLASS_MAPPINGS as _IDEOGRAM_NODE_CLASS_MAPPINGS
     from .ideogram import NODE_DISPLAY_NAME_MAPPINGS as _IDEOGRAM_NODE_DISPLAY_NAME_MAPPINGS
+    from .ascii import NODE_CLASS_MAPPINGS as _ASCII_NODE_CLASS_MAPPINGS
+    from .ascii import NODE_DISPLAY_NAME_MAPPINGS as _ASCII_NODE_DISPLAY_NAME_MAPPINGS
 except ImportError:
     from frames import NODE_CLASS_MAPPINGS as _FRAME_NODE_CLASS_MAPPINGS
     from frames import NODE_DISPLAY_NAME_MAPPINGS as _FRAME_NODE_DISPLAY_NAME_MAPPINGS
@@ -2333,6 +2196,8 @@ except ImportError:
     from structuredoutputs import NODE_DISPLAY_NAME_MAPPINGS as _STRUCTUREDOUTPUT_NODE_DISPLAY_NAME_MAPPINGS
     from ideogram import NODE_CLASS_MAPPINGS as _IDEOGRAM_NODE_CLASS_MAPPINGS
     from ideogram import NODE_DISPLAY_NAME_MAPPINGS as _IDEOGRAM_NODE_DISPLAY_NAME_MAPPINGS
+    from ascii import NODE_CLASS_MAPPINGS as _ASCII_NODE_CLASS_MAPPINGS
+    from ascii import NODE_DISPLAY_NAME_MAPPINGS as _ASCII_NODE_DISPLAY_NAME_MAPPINGS
 
 NODE_CLASS_MAPPINGS.update(_FRAME_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(_FRAME_NODE_DISPLAY_NAME_MAPPINGS)
@@ -2344,5 +2209,7 @@ NODE_CLASS_MAPPINGS.update(_STRUCTUREDOUTPUT_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(_STRUCTUREDOUTPUT_NODE_DISPLAY_NAME_MAPPINGS)
 NODE_CLASS_MAPPINGS.update(_IDEOGRAM_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(_IDEOGRAM_NODE_DISPLAY_NAME_MAPPINGS)
+NODE_CLASS_MAPPINGS.update(_ASCII_NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(_ASCII_NODE_DISPLAY_NAME_MAPPINGS)
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
