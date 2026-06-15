@@ -1,9 +1,9 @@
 """Annotation-based Ideogram helper nodes."""
 
 try:
-    from .node_api import String, node, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+    from .node_api import Int, String, node, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 except ImportError:  # allows quick local import tests outside package loading
-    from node_api import String, node, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+    from node_api import Int, String, node, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
 
 JSON_TEXT = String(multiline=True)
@@ -68,6 +68,99 @@ def ideogram4_json_prompt_composer(
         },
     }
     return jsonlib.dumps(prompt, indent=2, ensure_ascii=False)
+
+
+@node("roka/ideogram/RK_IdeogramCrop", returns=("ideogram_json", "elements_json"))
+def ideogram_crop(
+    ideogram_json: JSON_TEXT,
+    width: Int(min=1, default=1024),
+    height: Int(min=1, default=1024),
+    x1: Int(min=0, default=0),
+    y1: Int(min=0, default=0),
+    x2: Int(min=1, default=1024),
+    y2: Int(min=1, default=1024),
+) -> tuple[str, str]:
+    """Crop Ideogram v4 element bboxes and return updated full JSON plus elements JSON."""
+    import copy
+    import json as jsonlib
+
+    DISCARD_OUTSIDE_RATIO = 0.4
+
+    prompt = _json_load(ideogram_json, {})
+    if not isinstance(prompt, dict):
+        prompt = {}
+
+    out_prompt = copy.deepcopy(prompt)
+    compositional = out_prompt.setdefault("compositional_deconstruction", {})
+    if not isinstance(compositional, dict):
+        compositional = {}
+        out_prompt["compositional_deconstruction"] = compositional
+
+    source_elements = compositional.get("elements", [])
+    if not isinstance(source_elements, list):
+        source_elements = []
+
+    source_w = float(width)
+    source_h = float(height)
+    crop_x1 = float(x1)
+    crop_y1 = float(y1)
+    crop_x2 = float(x2)
+    crop_y2 = float(y2)
+    crop_w = crop_x2 - crop_x1
+    crop_h = crop_y2 - crop_y1
+
+    def valid_bbox(box: object) -> bool:
+        if not isinstance(box, list) or len(box) != 4:
+            return False
+        try:
+            y1n, x1n, y2n, x2n = [float(v) for v in box]
+        except Exception:
+            return False
+        return x2n > x1n and y2n > y1n
+
+    def clamp_norm(value: float) -> int:
+        return max(0, min(1000, round(value)))
+
+    elements = []
+    if source_w > 0 and source_h > 0 and crop_x1 >= 0 and crop_y1 >= 0 and crop_w > 0 and crop_h > 0:
+        for element in source_elements:
+            if not isinstance(element, dict) or not valid_bbox(element.get("bbox")):
+                continue
+
+            y1n, x1n, y2n, x2n = [float(v) for v in element["bbox"]]
+            box_x1 = x1n / 1000.0 * source_w
+            box_y1 = y1n / 1000.0 * source_h
+            box_x2 = x2n / 1000.0 * source_w
+            box_y2 = y2n / 1000.0 * source_h
+            box_area = (box_x2 - box_x1) * (box_y2 - box_y1)
+            if box_area <= 0:
+                continue
+
+            inside_x1 = max(box_x1, crop_x1)
+            inside_y1 = max(box_y1, crop_y1)
+            inside_x2 = min(box_x2, crop_x2)
+            inside_y2 = min(box_y2, crop_y2)
+            inside_w = max(0.0, inside_x2 - inside_x1)
+            inside_h = max(0.0, inside_y2 - inside_y1)
+            inside_area = inside_w * inside_h
+            outside_ratio = 1.0 - (inside_area / box_area)
+            if outside_ratio >= DISCARD_OUTSIDE_RATIO or inside_area <= 0:
+                continue
+
+            cropped = dict(element)
+            cropped["bbox"] = [
+                clamp_norm(((inside_y1 - crop_y1) / crop_h) * 1000.0),
+                clamp_norm(((inside_x1 - crop_x1) / crop_w) * 1000.0),
+                clamp_norm(((inside_y2 - crop_y1) / crop_h) * 1000.0),
+                clamp_norm(((inside_x2 - crop_x1) / crop_w) * 1000.0),
+            ]
+            elements.append(cropped)
+
+    compositional["elements"] = elements
+    return (
+        jsonlib.dumps(out_prompt, indent=2, ensure_ascii=False),
+        jsonlib.dumps(elements, indent=2, ensure_ascii=False),
+    )
 
 
 @node("roka/sam3/RK_SceneGraphToIdeogram4Json", returns=("elements_json",))
