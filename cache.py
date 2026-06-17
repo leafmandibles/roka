@@ -6,6 +6,10 @@ except ImportError:  # allows quick local import tests outside package loading
     from node_api import Any, node, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
 
+_CACHE_MAGIC = b"RK_CACHE_V1\n"
+_ALLOWED_DATA_TYPES = {"any", "IMAGE", "MASK", "LATENT"}
+
+
 def _rk_roka_cache_root():
     import os
 
@@ -41,6 +45,103 @@ def _rk_cache_path(hashid, label=None):
     return os.path.join(root, safe_hashid, safe_label)
 
 
+def _canonical_json_bytes(value):
+    import json
+
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _pack_cache_blob(descriptor, payload):
+    meta = _canonical_json_bytes(descriptor)
+    return _CACHE_MAGIC + len(meta).to_bytes(8, "big") + meta + payload
+
+
+def _unpack_cache_blob(blob):
+    import json
+
+    if not blob.startswith(_CACHE_MAGIC):
+        raise ValueError("Unsupported cache blob format")
+    offset = len(_CACHE_MAGIC)
+    meta_len = int.from_bytes(blob[offset:offset + 8], "big")
+    offset += 8
+    meta = json.loads(blob[offset:offset + meta_len].decode("utf-8"))
+    payload = blob[offset + meta_len:]
+    return meta, payload
+
+
+def _is_torch_tensor(value):
+    try:
+        import torch
+    except Exception:
+        return False
+    return isinstance(value, torch.Tensor)
+
+
+def _is_safetensors_saveable(value):
+    return isinstance(value, dict) and all(isinstance(k, str) and _is_torch_tensor(v) for k, v in value.items())
+
+
+def _serialize_cache_value(data, data_type="any"):
+    dtype = str(data_type or "any").strip() or "any"
+    if dtype not in _ALLOWED_DATA_TYPES:
+        raise ValueError(f"data_type must be one of {sorted(_ALLOWED_DATA_TYPES)}")
+
+    if isinstance(data, str):
+        payload = data.encode("utf-8")
+        return _pack_cache_blob({"version": 1, "kind": "STRING", "encoding": "utf-8"}, payload)
+
+    if isinstance(data, bytes):
+        return _pack_cache_blob({"version": 1, "kind": "BYTES"}, data)
+
+    tensor_map = None
+    unwrap_key = None
+    if _is_torch_tensor(data):
+        unwrap_key = "data"
+        tensor_map = {unwrap_key: data}
+    elif _is_safetensors_saveable(data):
+        tensor_map = data
+
+    if tensor_map is not None:
+        from safetensors.torch import save
+
+        payload = save({key: tensor.detach().cpu().contiguous() for key, tensor in sorted(tensor_map.items())})
+        return _pack_cache_blob(
+            {
+                "version": 1,
+                "kind": "TENSORS",
+                "format": "safetensors",
+                "data_type": dtype,
+                "unwrap_key": unwrap_key,
+            },
+            payload,
+        )
+
+    raise TypeError("RK cache only supports str, bytes, torch.Tensor, or dict[str, torch.Tensor]")
+
+
+def _deserialize_cache_value(blob):
+    descriptor, payload = _unpack_cache_blob(blob)
+    kind = descriptor.get("kind")
+
+    if kind == "STRING":
+        return payload.decode(descriptor.get("encoding", "utf-8"))
+    if kind == "BYTES":
+        return payload
+    if kind == "TENSORS" and descriptor.get("format") == "safetensors":
+        from safetensors.torch import load
+
+        tensors = load(payload)
+        unwrap_key = descriptor.get("unwrap_key")
+        data_type = descriptor.get("data_type", "any")
+        if data_type in {"IMAGE", "MASK"} and unwrap_key:
+            return tensors[unwrap_key]
+        if unwrap_key and data_type == "any":
+            return tensors[unwrap_key]
+        return tensors
+
+    raise ValueError(f"Unsupported cache blob kind: {kind!r}")
+
+
 @node("roka/cache/RK_HashFile", returns=("hashid",))
 def hash_file(file_path: str = "") -> str:
     import hashlib
@@ -60,25 +161,43 @@ def hash_file(file_path: str = "") -> str:
 
 
 @node("roka/cache/RK_HashCache", returns=("data",))
-def hash_cache(hashid: str = "", *, data: Any, label: str = "data") -> Any:
+def hash_cache(hashid: str = "", *, data: Any, label: str = "data", data_type: str = "any") -> Any:
     import os
-    import pickle
 
     path = _rk_cache_path(hashid, label)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
-        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        f.write(_serialize_cache_value(data, data_type=data_type))
     return data
+
+
+@node("roka/cache/RK_HashCacheEmitHashId", returns=("data", "hashid"), display_name="RK HashCache Emit Hash Id")
+def hash_cache_emit_hash_id(*, data: Any, label: str = "data", data_type: str = "any") -> tuple[Any, str]:
+    import hashlib
+    import os
+
+    blob = _serialize_cache_value(data, data_type=data_type)
+    hashid = hashlib.sha256(blob).hexdigest()
+    path = _rk_cache_path(hashid, label)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(blob)
+    return data, hashid
 
 
 @node("roka/cache/RK_CacheGet", returns=("data",))
 def cache_get(hashid: str = "", label: str = "data") -> Any:
-    import pickle
-
     path = _rk_cache_path(hashid, label)
     with open(path, "rb") as f:
-        data = pickle.load(f)
-    return data
+        return _deserialize_cache_value(f.read())
+
+
+@node("roka/cache/RK_CacheExists", returns=("exists",))
+def cache_exists(hashid: str = "", label: str = "data") -> bool:
+    import os
+
+    path = _rk_cache_path(hashid, label)
+    return os.path.isfile(path)
 
 
 @node("roka/cache/RK_CacheInfo", returns=("labels_json",))
